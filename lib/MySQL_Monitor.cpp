@@ -2677,10 +2677,16 @@ void * MySQL_Monitor::monitor_connect() {
 				if (rc_ping) { // only if server is responding to pings
 					MySQL_Monitor_State_Data *mmsd=new MySQL_Monitor_State_Data(r->fields[0],atoi(r->fields[1]), NULL, atoi(r->fields[2]));
 					mmsd->mondb=monitordb;
-					WorkItem<MySQL_Monitor_State_Data>* item;
-					item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_connect_thread);
-					GloMyMon->queue->add(item);
-					usleep(us);
+					if (MySQL_Monitor::dns_lookup(r->fields[0], false).empty() == false) {
+						monitor_connect_thread(mmsd);
+						delete mmsd;
+					}
+					else {
+						WorkItem<MySQL_Monitor_State_Data>* item;
+						item=new WorkItem<MySQL_Monitor_State_Data>(mmsd, monitor_connect_thread);
+						GloMyMon->queue->add(item);
+						usleep(us);
+					}
 				}
 				if (GloMyMon->shutdown) return NULL;
 			}
