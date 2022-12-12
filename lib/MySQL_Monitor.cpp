@@ -1135,7 +1135,6 @@ void * monitor_ping_thread(void *arg) {
 	mysql_thr->refresh_variables();
 
 	bool ping_success = false;
-	mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
 	unsigned long long start_time=mysql_thr->curtime;
 
 	mmsd->t1=start_time;
@@ -1363,9 +1362,7 @@ void * monitor_read_only_thread(void *arg) {
 	mysql_thr->curtime=monotonic_time();
 	mysql_thr->refresh_variables();
 
-	mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
 	unsigned long long start_time=mysql_thr->curtime;
-
 	bool read_only_success = false;
 	mmsd->t1=start_time;
 
@@ -1621,10 +1618,7 @@ void * monitor_group_replication_thread(void *arg) {
 	mysql_thr->refresh_variables();
 	if (!GloMTH) return NULL;	// quick exit during shutdown/restart
 
-	mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
 	unsigned long long start_time=mysql_thr->curtime;
-
-
 	mmsd->t1=start_time;
 
 	bool crc=false;
@@ -1964,7 +1958,6 @@ void * monitor_galera_thread(void *arg) {
 	mysql_thr->refresh_variables();
 	if (!GloMTH) return NULL;	// quick exit during shutdown/restart
 
-	mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
 	unsigned long long start_time=mysql_thr->curtime;
 
 #ifdef DEBUG
@@ -2360,7 +2353,6 @@ void * monitor_replication_lag_thread(void *arg) {
 	MYSQL *mysqlcopy __attribute__((unused)) = NULL;
 #endif // DEBUG
 
-	mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
 	unsigned long long start_time=mysql_thr->curtime;
 
 	bool replication_lag_success = false;
@@ -2811,10 +2803,17 @@ void * MySQL_Monitor::monitor_ping() {
 				SQLite3_row *r=*it;
 				MySQL_Monitor_State_Data *mmsd = new MySQL_Monitor_State_Data(r->fields[0],atoi(r->fields[1]), NULL, atoi(r->fields[2]));
 				mmsd->mondb=monitordb;
-				WorkItem<MySQL_Monitor_State_Data>* item;
-				item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_ping_thread);
-				GloMyMon->queue->add(item);
-				usleep(us);
+				mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
+				if (mmsd->mysql) {
+					monitor_ping_thread(mmsd);
+					delete mmsd;
+				}
+				else {
+					WorkItem<MySQL_Monitor_State_Data>* item;
+					item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_ping_thread);
+					GloMyMon->queue->add(item);
+					usleep(us);
+				}
 				if (GloMyMon->shutdown) return NULL;
 			}
 		}
@@ -3098,10 +3097,17 @@ void * MySQL_Monitor::monitor_read_only() {
 						}
 					}
 					mmsd->mondb=monitordb;
-					WorkItem<MySQL_Monitor_State_Data>* item;
-					item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_read_only_thread);
-					GloMyMon->queue->add(item);
-					usleep(us);
+					mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
+					if (mmsd->mysql) {
+						monitor_read_only_thread(mmsd);
+						delete mmsd;
+					}
+					else {
+						WorkItem<MySQL_Monitor_State_Data>* item;
+						item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_read_only_thread);
+						GloMyMon->queue->add(item);
+						usleep(us);
+					}
 				}
 				if (GloMyMon->shutdown) return NULL;
 			}
@@ -3220,10 +3226,17 @@ void * MySQL_Monitor::monitor_group_replication() {
 					mmsd->max_transactions_behind=atoi(r->fields[5]);
 					mmsd->max_transactions_behind_count=mysql_thread___monitor_groupreplication_max_transactions_behind_count;
 					mmsd->mondb=monitordb;
-					WorkItem<MySQL_Monitor_State_Data>* item;
-					item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_group_replication_thread);
-					GloMyMon->queue->add(item);
-					usleep(us);
+					mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
+					if (mmsd->mysql) {
+						monitor_group_replication_thread(mmsd);
+						delete mmsd;
+					}
+					else {
+						WorkItem<MySQL_Monitor_State_Data>* item;
+						item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_group_replication_thread);
+						GloMyMon->queue->add(item);
+						usleep(us);
+					}
 				}
 				if (GloMyMon->shutdown) {
 					pthread_mutex_unlock(&group_replication_mutex);
@@ -3335,10 +3348,17 @@ void * MySQL_Monitor::monitor_galera() {
 					mmsd->writer_is_also_reader=atoi(r->fields[4]);
 					mmsd->max_transactions_behind=atoi(r->fields[5]);
 					mmsd->mondb=monitordb;
-					WorkItem<MySQL_Monitor_State_Data>* item;
-					item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_galera_thread);
-					GloMyMon->queue->add(item);
-					usleep(us);
+					mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
+					if (mmsd->mysql) {
+						monitor_galera_thread(mmsd);
+						delete mmsd;
+					}
+					else {
+						WorkItem<MySQL_Monitor_State_Data>* item;
+						item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_galera_thread);
+						GloMyMon->queue->add(item);
+						usleep(us);
+					}
 				}
 				if (GloMyMon->shutdown) {
 					pthread_mutex_unlock(&galera_mutex);
@@ -3436,10 +3456,17 @@ void * MySQL_Monitor::monitor_replication_lag() {
 				if (rc_ping) { // only if server is responding to pings
 					MySQL_Monitor_State_Data *mmsd = new MySQL_Monitor_State_Data(r->fields[1], atoi(r->fields[2]), NULL, atoi(r->fields[4]), atoi(r->fields[0]));
 					mmsd->mondb=monitordb;
-					WorkItem<MySQL_Monitor_State_Data>* item;
-					item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_replication_lag_thread);
-					GloMyMon->queue->add(item);
-					usleep(us);
+					mmsd->mysql=GloMyMon->My_Conn_Pool->get_connection(mmsd->hostname, mmsd->port, mmsd);
+					if (mmsd->mysql) {
+						monitor_replication_lag_thread(mmsd);
+						delete mmsd;
+					}
+					else {
+						WorkItem<MySQL_Monitor_State_Data>* item;
+						item=new WorkItem<MySQL_Monitor_State_Data>(mmsd,monitor_replication_lag_thread);
+						GloMyMon->queue->add(item);
+						usleep(us);
+					}
 				}
 				if (GloMyMon->shutdown) return NULL;
 			}
