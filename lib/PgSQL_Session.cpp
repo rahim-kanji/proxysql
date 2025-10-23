@@ -5676,8 +5676,9 @@ int PgSQL_Session::handle_post_sync_parse_message(PgSQL_Parse_Message* parse_msg
 	PgSQL_STMTs_local_v14* local_stmts = client_myds->myconn->local_stmts;
 	std::string stmt_name(extended_query_info.stmt_client_name);
 
-	if (auto it = local_stmts->stmt_name_to_global_ids.find(stmt_name);
-		it != local_stmts->stmt_name_to_global_ids.end()) {
+	auto it = local_stmts->stmt_name_to_global_ids.find(stmt_name);
+
+	if (it != local_stmts->stmt_name_to_global_ids.end()) {
 
 		if (!stmt_name.empty()) {
 			const std::string& errmsg = "prepared statement \"" + stmt_name + "\" already exist";
@@ -5686,19 +5687,6 @@ int PgSQL_Session::handle_post_sync_parse_message(PgSQL_Parse_Message* parse_msg
 			l_free(parse_pkt.size, parse_pkt.ptr);
 			return 2;
 		}
-
-		uint64_t global_id = it->second;
-		auto range = local_stmts->global_id_to_stmt_names.equal_range(global_id);
-
-		for (auto iter = range.first; iter != range.second; ++iter) {
-			if (iter->second == stmt_name) {
-				local_stmts->global_id_to_stmt_names.erase(iter);
-				break;
-			}
-		}
-
-		local_stmts->stmt_name_to_global_ids.erase(it);
-		local_stmts->client_close(stmt_name);
 	}
 
 	// Hash the query
@@ -5711,12 +5699,10 @@ int PgSQL_Session::handle_post_sync_parse_message(PgSQL_Parse_Message* parse_msg
 	);
 
 	// Check global statement cache
-	GloPgStmt->wrlock();
 	PgSQL_STMT_Global_info* stmt_info = GloPgStmt->find_prepared_statement_by_hash(hash, false);
 	if (stmt_info) {
-		local_stmts->client_insert(stmt_info->statement_id, stmt_name);
+		local_stmts->client_insert(stmt_info, stmt_name, true, it);
 		extended_query_info.stmt_global_id = stmt_info->statement_id;
-		GloPgStmt->unlock();
 		client_myds->setDSS_STATE_QUERY_SENT_NET();
 		char txn_state = NumActiveTransactions() > 0 ? 'T' : 'I';
 		bool send_ready_packet = is_extended_query_ready_for_query();
@@ -5727,7 +5713,6 @@ int PgSQL_Session::handle_post_sync_parse_message(PgSQL_Parse_Message* parse_msg
 		l_free(parse_pkt.size, parse_pkt.ptr);
 		return 0;
 	}
-	GloPgStmt->unlock();
 
 	if (extended_query_frame.empty() == true) {
 		extended_query_info.flags |= PGSQL_EXTENDED_QUERY_FLAG_SYNC;
@@ -6292,7 +6277,7 @@ bool PgSQL_Session::handler___status_WAITING_CLIENT_DATA___STATE_SLEEP___PGSQL_P
 		client_myds->setDSS_STATE_QUERY_SENT_NET();
 		client_myds->myprot.generate_error_packet(true, false, "invalid string in message", PGSQL_ERROR_CODES::ERRCODE_PROTOCOL_VIOLATION,
 			true, true);
-		writeout();
+		//writeout();
 		return false;
 	}
 	extended_query_frame.push(std::move(parse_msg)); // we will process it later, after sync packet
@@ -6317,7 +6302,7 @@ bool PgSQL_Session::handler___status_WAITING_CLIENT_DATA___STATE_SLEEP___PGSQL_D
 		client_myds->setDSS_STATE_QUERY_SENT_NET();
 		client_myds->myprot.generate_error_packet(true, false, "invalid string in message", PGSQL_ERROR_CODES::ERRCODE_PROTOCOL_VIOLATION,
 			true, true);
-		writeout();
+		//writeout();
 		return false;
 	}
 	extended_query_frame.push(std::move(describe_msg)); // we will process it later, after sync packet
@@ -6341,7 +6326,7 @@ bool PgSQL_Session::handler___status_WAITING_CLIENT_DATA___STATE_SLEEP___PGSQL_C
 		client_myds->setDSS_STATE_QUERY_SENT_NET();
 		client_myds->myprot.generate_error_packet(true, false, "invalid string in message", PGSQL_ERROR_CODES::ERRCODE_PROTOCOL_VIOLATION,
 			true, true);
-		writeout();
+		//writeout();
 		return false;
 	}
 	extended_query_frame.push(std::move(close_msg)); // we will process it later, after sync packet
@@ -6365,7 +6350,7 @@ bool PgSQL_Session::handler___status_WAITING_CLIENT_DATA___STATE_SLEEP___PGSQL_B
 		client_myds->setDSS_STATE_QUERY_SENT_NET();
 		client_myds->myprot.generate_error_packet(true, false, "invalid string in message", PGSQL_ERROR_CODES::ERRCODE_PROTOCOL_VIOLATION,
 			true, true);
-		writeout();
+		//writeout();
 		return false;
 	}
 	extended_query_frame.push(std::move(bind_msg)); // we will process it later, after sync packet
@@ -6390,7 +6375,7 @@ bool PgSQL_Session::handler___status_WAITING_CLIENT_DATA___STATE_SLEEP___PGSQL_E
 		client_myds->setDSS_STATE_QUERY_SENT_NET();
 		client_myds->myprot.generate_error_packet(true, false, "invalid string in message", PGSQL_ERROR_CODES::ERRCODE_PROTOCOL_VIOLATION,
 			true, true);
-		writeout();
+		//writeout();
 		return false;
 	}
 	extended_query_frame.push(std::move(execute_msg)); // we will process it later, after sync packet
@@ -6403,15 +6388,13 @@ bool PgSQL_Session::handler___rc0_PROCESSING_STMT_PREPARE(enum session_status& s
 	uint64_t global_stmtid;
 
 	PgSQL_STMT_Global_info* stmt_info = NULL;
-	GloPgStmt->wrlock();
 	stmt_info = GloPgStmt->add_prepared_statement(
 		(char*)client_myds->myconn->userinfo->username,
 		(char*)client_myds->myconn->userinfo->dbname,
 		(char*)CurrentQuery.QueryPointer,
 		CurrentQuery.QueryLength,
 		CurrentQuery.QueryParserArgs.first_comment,
-		std::move(CurrentQuery.extended_query_info.parse_param_types),
-		false);
+		std::move(CurrentQuery.extended_query_info.parse_param_types));
 	assert(stmt_info); // GloPgStmt->add_prepared_statement() should always return a valid pointer
 	if (CurrentQuery.QueryParserArgs.digest_text) {
 		if (stmt_info->digest_text == NULL) {
@@ -6434,15 +6417,15 @@ bool PgSQL_Session::handler___rc0_PROCESSING_STMT_PREPARE(enum session_status& s
 		myds->DSS = STATE_MARIADB_GENERIC;
 		st = previous_status.top();
 		previous_status.pop();
-		GloPgStmt->unlock();
+
 		return true;
 	}
 	// We only perform the client_insert when there is no previous status, this
 	// is, when 'PROCESSING_STMT_PREPARE' is reached directly without transitioning from a previous status
 	// like 'PROCESSING_STMT_EXECUTE'.
 	assert(extended_query_info.stmt_client_name);
-	client_myds->myconn->local_stmts->client_insert(global_stmtid, extended_query_info.stmt_client_name);
-	GloPgStmt->unlock();
+
+	client_myds->myconn->local_stmts->client_insert(stmt_info, extended_query_info.stmt_client_name, false, client_myds->myconn->local_stmts->stmt_name_to_global_ids.find(extended_query_info.stmt_client_name));
 
 	return false;
 }

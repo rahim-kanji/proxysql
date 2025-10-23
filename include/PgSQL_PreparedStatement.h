@@ -17,8 +17,8 @@ public:
 	char *dbname;
 	char *query;
 	unsigned int query_length;
-	int ref_count_client;
-	int ref_count_server;
+	std::atomic<uint32_t> ref_count_client;
+	std::atomic<uint32_t> ref_count_server;
 	uint64_t statement_id;
 	char* first_comment;
 	uint64_t total_mem_usage;
@@ -60,14 +60,16 @@ public:
 	unsigned int get_num_backend_stmts() { return backend_stmt_to_global_ids.size(); }
 
 	void backend_insert(uint64_t global_stmt_id, uint32_t backend_stmt_id);
-	void client_insert(uint64_t global_stmt_id, const std::string& client_stmt_name);
-	uint64_t compute_hash(const char *user, const char *database, const char *query, unsigned int query_length, 
-		const Parse_Param_Types& param_types);
+	void client_insert(PgSQL_STMT_Global_info* stmt_info, const std::string& client_stmt_name, bool ref_client_inc,
+		std::map<std::string, uint64_t>::iterator itr);
 	uint32_t generate_new_backend_stmt_id();
 	uint64_t find_global_id_from_stmt_name(const std::string& client_stmt_name);
 	uint32_t find_backend_stmt_id_from_global_id(uint64_t global_id);
 	bool client_close(const std::string& stmt_name);
 	void client_close_all();
+
+	static uint64_t compute_hash(const char* user, const char* database, const char* query, unsigned int query_length,
+		const Parse_Param_Types& param_types);
 
 private:
 	bool is_client_;
@@ -86,6 +88,7 @@ public:
 	inline void wrlock() { pthread_rwlock_wrlock(&rwlock_); }
 	inline void unlock() { pthread_rwlock_unlock(&rwlock_); }
 	void ref_count_client(uint64_t _stmt, int _v, bool lock=true) noexcept;
+	void ref_count_client(PgSQL_STMT_Global_info* stmt_info, int _v, bool lock=true) noexcept;
 	void ref_count_server(uint64_t _stmt, int _v, bool lock=true) noexcept;
 	PgSQL_STMT_Global_info* add_prepared_statement(char *user, char *database, char *query, unsigned int query_len, 
 		char *fc, Parse_Param_Types&& ppt, bool lock=true);
@@ -96,8 +99,8 @@ public:
 
 private:
 	uint64_t next_statement_id;
-	uint64_t num_stmt_with_ref_client_count_zero;
-	uint64_t num_stmt_with_ref_server_count_zero;
+	std::atomic<uint64_t> num_stmt_with_ref_client_count_zero;
+	std::atomic<uint64_t> num_stmt_with_ref_server_count_zero;
 	pthread_rwlock_t rwlock_;
 	std::map<uint64_t, PgSQL_STMT_Global_info*> map_stmt_id_to_info;	// map using statement id
 	std::map<uint64_t, PgSQL_STMT_Global_info*> map_stmt_hash_to_info;	// map using hashes
@@ -111,6 +114,8 @@ private:
 		uint64_t s_total;
 	} statuses;
 	time_t last_purge_time;
+
+	void purge_stmts_if_needed(bool is_locked) noexcept;
 };
 
 #endif /* CLASS_PGSQL_PREPARED_STATEMENT_H */

@@ -119,18 +119,57 @@ void PgSQL_STMTs_local_v14::backend_insert(uint64_t global_stmt_id, uint32_t bac
 	backend_stmt_to_global_ids.insert(std::make_pair(backend_stmt_id,global_stmt_id));
 }
 
-void PgSQL_STMTs_local_v14::client_insert(uint64_t global_stmt_id, const std::string& client_stmt_name) {
-	// validate that client_stmt_name is not empty and global_stmt_id is a valid id
-	[[maybe_unused]] auto [it, inserted] = stmt_name_to_global_ids.try_emplace(client_stmt_name, global_stmt_id);
-	assert(inserted && "client_stmt_name already exists in stmt_name_to_global_ids"); // Should not happen, as we expect unique client_stmt_name
+void PgSQL_STMTs_local_v14::client_insert(PgSQL_STMT_Global_info* stmt_info, const std::string& client_stmt_name, bool ref_client_inc, std::map<std::string, uint64_t>::iterator it) {
+
+	uint64_t global_stmt_id = stmt_info->statement_id;
+
+	if (it != stmt_name_to_global_ids.end()) {
+		uint64_t existing_global_id = it->second;
+
+		if (existing_global_id == global_stmt_id) {
+			// Already mapped to same global id — nothing to do
 #ifdef DEBUG
-	auto range = global_id_to_stmt_names.equal_range(global_stmt_id);
-	for (auto it = range.first; it != range.second; ++it) {
-		assert(it->second != client_stmt_name && "client_stmt_name is already mapped to global_stmt_id in global_id_to_stmt_names"); // Should not happen, as we expect unique client_stmt_name per global_stmt_id
-	}
+			bool found = false;
+			auto range = global_id_to_stmt_names.equal_range(global_stmt_id);
+			for (auto iter = range.first; iter != range.second; ++iter) {
+				if (iter->second == client_stmt_name) { found = true; break; }
+			}
+			assert(found && "Inconsistent: missing mapping in global_id_to_stmt_names");
 #endif
+			if (ref_client_inc)
+				GloPgStmt->ref_count_client(stmt_info, -1);
+			return;
+		}
+
+		// Update existing entry to new global id
+		it->second = global_stmt_id;
+
+		auto range = global_id_to_stmt_names.equal_range(existing_global_id);
+		// Remove old mapping in global_id_to_stmt_names
+		for (auto iter = range.first; iter != range.second; ++it) {
+			if (iter->second == client_stmt_name) {
+				iter = global_id_to_stmt_names.erase(iter);
+				break;
+			}
+		}
+
+		// Add new mapping
+		global_id_to_stmt_names.emplace(global_stmt_id, client_stmt_name);
+
+		// Adjust refcounts: decrement old, increment new
+		GloPgStmt->ref_count_client(existing_global_id, -1);
+
+		if (ref_client_inc == false)
+			GloPgStmt->ref_count_client(stmt_info, 1);
+		return;
+	}
+
+	// New statement name — just insert
+	stmt_name_to_global_ids.emplace(client_stmt_name, global_stmt_id);
 	global_id_to_stmt_names.emplace(global_stmt_id, client_stmt_name);
-	GloPgStmt->ref_count_client(global_stmt_id, 1, false); // do not lock!
+
+	if (ref_client_inc == false)
+		GloPgStmt->ref_count_client(stmt_info, 1);
 }
 
 uint64_t PgSQL_STMTs_local_v14::compute_hash(const char *user,
@@ -154,115 +193,184 @@ PgSQL_STMT_Manager_v14::PgSQL_STMT_Manager_v14() {
 }
 
 PgSQL_STMT_Manager_v14::~PgSQL_STMT_Manager_v14() {
+	wrlock();
 	for (auto it = map_stmt_id_to_info.begin(); it != map_stmt_id_to_info.end(); ++it) {
 		PgSQL_STMT_Global_info * a = it->second;
 		delete a;
 	}
+	unlock();
 }
 
-void PgSQL_STMT_Manager_v14::ref_count_client(uint64_t _stmt_id ,int _v, bool lock) noexcept {
-	if (lock)
-		wrlock();
-	
-	if (auto s = map_stmt_id_to_info.find(_stmt_id); s != map_stmt_id_to_info.end()) {
-		statuses.c_total += _v;
-		PgSQL_STMT_Global_info *stmt_info = s->second;
-		if (stmt_info->ref_count_client == 0 && _v == 1) {
-			__sync_sub_and_fetch(&num_stmt_with_ref_client_count_zero,1);
-		} else {
-			if (stmt_info->ref_count_client == 1 && _v == -1) {
-				__sync_add_and_fetch(&num_stmt_with_ref_client_count_zero,1);
-			}
-		}
-		stmt_info->ref_count_client += _v;
-		time_t ct = time(NULL);
-		uint64_t num_client_count_zero = __sync_add_and_fetch(&num_stmt_with_ref_client_count_zero, 0);
-		uint64_t num_server_count_zero = __sync_add_and_fetch(&num_stmt_with_ref_server_count_zero, 0);
+void PgSQL_STMT_Manager_v14::purge_stmts_if_needed(bool is_locked) noexcept {
+	time_t ct = time(NULL);
+	if (ct <= last_purge_time + 1)
+		return; // too soon, skip
 
-		size_t map_size = map_stmt_id_to_info.size();
-		if (
-			(ct > last_purge_time+1) &&
-			(map_size > (unsigned)pgsql_thread___max_stmts_cache) &&
-			(num_client_count_zero > map_size/10) &&
-			(num_server_count_zero > map_size/10)
-		) { // purge only if there is at least 10% gain
-			last_purge_time = ct;
-			int max_purge = map_size ;
-			std::vector<uint64_t> torem;
-			torem.reserve(max_purge);
+	// --- Light pre-check without lock ---
+	size_t map_size = map_stmt_id_to_info.size();
+	uint64_t num_client_zero = num_stmt_with_ref_client_count_zero.load(std::memory_order_relaxed);
+	uint64_t num_server_zero = num_stmt_with_ref_server_count_zero.load(std::memory_order_relaxed);
 
-			for (auto it = map_stmt_id_to_info.begin(); it != map_stmt_id_to_info.end(); ++it) {
-				if (torem.size() >= std::min(static_cast<size_t>(max_purge),
-					static_cast<size_t>(num_client_count_zero))) {
-					break;
-				}
-				PgSQL_STMT_Global_info *a = it->second;
-				if ((__sync_add_and_fetch(&a->ref_count_client, 0) == 0) &&
-					(a->ref_count_server == 0) ) // this to avoid that IDs are incorrectly reused
-				{
-					uint64_t hash = a->hash;
-					map_stmt_hash_to_info.erase(hash);
-					__sync_sub_and_fetch(&num_stmt_with_ref_client_count_zero,1);
-					torem.emplace_back(it->first);
-				}
-			}
-			while (!torem.empty()) {
-				uint64_t id = torem.back();
-				torem.pop_back();
-				auto s3 = map_stmt_id_to_info.find(id);
-				PgSQL_STMT_Global_info *a = s3->second;
-				if (a->ref_count_server == 0) {
-					__sync_sub_and_fetch(&num_stmt_with_ref_server_count_zero,1);
-					free_stmt_ids.push(id);
-				}
-				map_stmt_id_to_info.erase(s3);
-				statuses.s_total -= a->ref_count_server;
-				delete a;
-			}
+	if (map_size <= (unsigned)pgsql_thread___max_stmts_cache ||
+		num_client_zero <= map_size / 10 ||
+		num_server_zero <= map_size / 10)
+	{
+		// Heuristic says no purge needed
+		return;
+	}
+
+	if (is_locked)
+		unlock();
+
+	// --- Now we know we might purge, take write lock ---
+	wrlock();
+
+	// Double-check under exclusive lock (authoritative)
+	ct = time(NULL);
+	if (ct <= last_purge_time + 1) {
+		unlock();
+		return;
+	}
+
+	map_size = map_stmt_id_to_info.size();
+	num_client_zero = num_stmt_with_ref_client_count_zero.load(std::memory_order_relaxed);
+	num_server_zero = num_stmt_with_ref_server_count_zero.load(std::memory_order_relaxed);
+
+	if (map_size <= (unsigned)pgsql_thread___max_stmts_cache ||
+		num_client_zero <= map_size / 10 ||
+		num_server_zero <= map_size / 10)
+	{
+		last_purge_time = ct;
+		unlock();
+		return;
+	}
+
+	// --- Actual purge happens here under wrlock() ---
+	last_purge_time = ct;
+
+	std::vector<uint64_t> to_remove;
+	to_remove.reserve(map_size);
+
+	for (auto it = map_stmt_id_to_info.begin(); it != map_stmt_id_to_info.end(); ++it) {
+		PgSQL_STMT_Global_info* a = it->second;
+		int rc_client = a->ref_count_client.load(std::memory_order_acquire);
+		int rc_server = a->ref_count_server.load(std::memory_order_acquire);
+
+		if (rc_client == 0 && rc_server == 0) {
+			map_stmt_hash_to_info.erase(a->hash);
+			num_stmt_with_ref_client_count_zero.fetch_sub(1, std::memory_order_relaxed);
+			num_stmt_with_ref_server_count_zero.fetch_sub(1, std::memory_order_relaxed);
+			to_remove.push_back(it->first);
 		}
 	}
-	if (lock)
-		unlock();
+
+	for (auto id : to_remove) {
+		auto it = map_stmt_id_to_info.find(id);
+		if (it != map_stmt_id_to_info.end()) {
+			PgSQL_STMT_Global_info* a = it->second;
+			//if (a->ref_count_client.load(std::memory_order_acquire) == 0 &&
+			//	a->ref_count_server.load(std::memory_order_acquire) == 0)
+			//{
+				free_stmt_ids.push(id);
+				map_stmt_id_to_info.erase(it);
+				statuses.s_total -= a->ref_count_server.load(std::memory_order_relaxed);
+				delete a;
+			//}
+		}
+	}
+
+	unlock();
 }
 
-void PgSQL_STMT_Manager_v14::ref_count_server(uint64_t _stmt_id ,int _v, bool lock) noexcept {
-	if (lock)
-		wrlock();
-	std::map<uint64_t, PgSQL_STMT_Global_info *>::iterator s;
-	s = map_stmt_id_to_info.find(_stmt_id);
+void PgSQL_STMT_Manager_v14::ref_count_client(uint64_t _stmt_id, int _v, bool lock) noexcept {
+	if (lock) rdlock();
+
+	if (auto s = map_stmt_id_to_info.find(_stmt_id); s != map_stmt_id_to_info.end()) {
+		PgSQL_STMT_Global_info* stmt_info = s->second;
+		ref_count_client(stmt_info, _v, false);
+	}
+	if (lock) unlock();
+}
+
+void PgSQL_STMT_Manager_v14::ref_count_client(PgSQL_STMT_Global_info* stmt_info, int _v, bool lock) noexcept {
+	if (lock) rdlock();
+
+	statuses.c_total += _v;
+	
+	if (_v == 1) {
+		// increment: relaxed is fine for performance
+		int prev = stmt_info->ref_count_client.fetch_add(1, std::memory_order_relaxed);
+		// if prev was 0 -> we transitioned 0 -> 1: one fewer zero-count entry
+		if (prev == 0) {
+			num_stmt_with_ref_client_count_zero.fetch_sub(1, std::memory_order_relaxed);
+		}
+	} else if (_v == -1) {
+		// decrement: use acq_rel to synchronize-with potential deleter
+		int prev = stmt_info->ref_count_client.fetch_sub(1, std::memory_order_acq_rel);
+		// prev is the value before subtraction
+		if (prev == 1) {
+			// we just transitioned to zero
+			num_stmt_with_ref_client_count_zero.fetch_add(1, std::memory_order_relaxed);
+		}
+	} else {
+		// support other increments/decrements (if needed)
+		int prev = stmt_info->ref_count_client.fetch_add(_v,
+			(_v > 0) ? std::memory_order_relaxed : std::memory_order_acq_rel);
+		if (_v > 0 && prev == 0) num_stmt_with_ref_client_count_zero.fetch_sub(1, std::memory_order_relaxed);
+		if (_v < 0 && prev + _v == 0) num_stmt_with_ref_client_count_zero.fetch_add(1, std::memory_order_relaxed);
+	}
+	
+	if (lock) unlock();
+
+	purge_stmts_if_needed(!lock);
+}
+
+void PgSQL_STMT_Manager_v14::ref_count_server(uint64_t _stmt_id, int _v, bool lock) noexcept {
+	if (lock) rdlock();
+	auto s = map_stmt_id_to_info.find(_stmt_id);
 	if (s != map_stmt_id_to_info.end()) {
 		statuses.s_total += _v;
-		PgSQL_STMT_Global_info *stmt_info = s->second;
-		if (stmt_info->ref_count_server == 0 && _v == 1) {
-			__sync_sub_and_fetch(&num_stmt_with_ref_server_count_zero,1);
-		} else {
-			if (stmt_info->ref_count_server == 1 && _v == -1) {
-				__sync_add_and_fetch(&num_stmt_with_ref_server_count_zero,1);
+		PgSQL_STMT_Global_info* stmt_info = s->second;
+
+		if (_v == 1) {
+			int prev = stmt_info->ref_count_server.fetch_add(1, std::memory_order_relaxed);
+			if (prev == 0) {
+				num_stmt_with_ref_server_count_zero.fetch_sub(1, std::memory_order_relaxed);
 			}
+		} else if (_v == -1) {
+			int prev = stmt_info->ref_count_server.fetch_sub(1, std::memory_order_acq_rel);
+			if (prev == 1) {
+				num_stmt_with_ref_server_count_zero.fetch_add(1, std::memory_order_relaxed);
+			}
+		} else {
+			int prev = stmt_info->ref_count_server.fetch_add(_v,
+				(_v > 0) ? std::memory_order_relaxed : std::memory_order_acq_rel);
+			if (_v > 0 && prev == 0) num_stmt_with_ref_server_count_zero.fetch_sub(1, std::memory_order_relaxed);
+			if (_v < 0 && prev + _v == 0) num_stmt_with_ref_server_count_zero.fetch_add(1, std::memory_order_relaxed);
 		}
-		stmt_info->ref_count_server += _v;
 	}
-	if (lock)
-		unlock();
+	if (lock) unlock();
 }
 
 PgSQL_STMTs_local_v14::~PgSQL_STMTs_local_v14() {
 	// Note: we do not free the prepared statements because we assume that
 	// if we call this destructor the connection is being destroyed anyway
 
+	GloPgStmt->rdlock();
 	if (is_client_) {
 		for (auto it = stmt_name_to_global_ids.begin();
 			it != stmt_name_to_global_ids.end(); ++it) {
 			uint64_t global_stmt_id = it->second;
-			GloPgStmt->ref_count_client(global_stmt_id, -1);
+			GloPgStmt->ref_count_client(global_stmt_id, -1, false);
 		}
 	} else {
 		for (auto it = backend_stmt_to_global_ids.begin();
 			it != backend_stmt_to_global_ids.end(); ++it) {
 			uint64_t global_stmt_id = it->second;
-			GloPgStmt->ref_count_server(global_stmt_id, -1);
+			GloPgStmt->ref_count_server(global_stmt_id, -1, false);
 		}
 	}
+	GloPgStmt->unlock();
 }
 
 
@@ -274,6 +382,7 @@ PgSQL_STMT_Global_info *PgSQL_STMT_Manager_v14::find_prepared_statement_by_hash(
 	
 	if (auto s = map_stmt_hash_to_info.find(hash); s != map_stmt_hash_to_info.end()) {
 		ret = s->second;
+		ref_count_client(ret, 1, false); // touch refcount for LRU purposes
 	}
 
 	if (lock) {
@@ -344,9 +453,11 @@ bool PgSQL_STMTs_local_v14::client_close(const std::string& stmt_name) {
 }
 
 void PgSQL_STMTs_local_v14::client_close_all() {
+	GloPgStmt->rdlock();
 	for (auto [_, global_stmt_id] : stmt_name_to_global_ids) {
-		GloPgStmt->ref_count_client(global_stmt_id, -1);
+		GloPgStmt->ref_count_client(global_stmt_id, -1, false);
 	}
+	GloPgStmt->unlock();
 	stmt_name_to_global_ids.clear();
 	global_id_to_stmt_names.clear();
 }
@@ -379,13 +490,16 @@ PgSQL_STMT_Global_info* PgSQL_STMT_Manager_v14::add_prepared_statement(
 		map_stmt_id_to_info.insert(std::make_pair(stmt_info->statement_id, stmt_info.get()));
 		map_stmt_hash_to_info.insert(std::make_pair(stmt_info->hash, stmt_info.get()));
 		ret = stmt_info.release();
-		__sync_add_and_fetch(&num_stmt_with_ref_client_count_zero,1);
-		__sync_add_and_fetch(&num_stmt_with_ref_server_count_zero,1);
+		num_stmt_with_ref_client_count_zero.fetch_add(1, std::memory_order_relaxed);
+		num_stmt_with_ref_server_count_zero.fetch_add(1, std::memory_order_relaxed);
 	}
-	if (ret->ref_count_server == 0) {
-		__sync_sub_and_fetch(&num_stmt_with_ref_server_count_zero,1);
+	// Server refcount increment logic (atomic)
+	int prev = ret->ref_count_server.fetch_add(1, std::memory_order_relaxed);
+	if (prev == 0) {
+		// Transition 0 -> 1: one fewer stmt with zero server refcount
+		num_stmt_with_ref_server_count_zero.fetch_sub(1, std::memory_order_relaxed);
 	}
-	ret->ref_count_server++;
+
 	statuses.s_total++;
 	if (lock) {
 		unlock();
@@ -424,7 +538,7 @@ void PgSQL_STMT_Manager_v14::get_metrics(uint64_t *c_unique, uint64_t *c_total,
 	uint64_t s_u = 0;
 	uint64_t s_t = 0;
 #endif
-	wrlock();
+	rdlock();
 	statuses.cached = map_stmt_id_to_info.size();
 	statuses.c_unique = statuses.cached - num_stmt_with_ref_client_count_zero;
 	statuses.s_unique = statuses.cached - num_stmt_with_ref_server_count_zero;
