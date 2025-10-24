@@ -183,7 +183,7 @@ bool pgsql_variable_validate_maintenance_work_mem(const char* value, const param
 	if (transformed_value) *transformed_value = nullptr;
 
 	// Skip leading whitespace
-	while (isspace((unsigned char)*p)) p++;
+	while (myisspace((unsigned char)*p)) p++;
 
 	// Parse numeric part
 	num = strtoll(p, &endptr, 10);
@@ -196,7 +196,7 @@ bool pgsql_variable_validate_maintenance_work_mem(const char* value, const param
 	p = endptr;
 
 	// Skip whitespace after number
-	while (isspace((unsigned char)*p)) p++;
+	while (myisspace((unsigned char)*p)) p++;
 
 	// Parse unit
 	if (*p != '\0') {
@@ -218,7 +218,7 @@ bool pgsql_variable_validate_maintenance_work_mem(const char* value, const param
 	}
 
 	// Skip trailing whitespace
-	while (isspace((unsigned char)*p)) p++;
+	while (myisspace((unsigned char)*p)) p++;
 
 	// Validate entire string consumed
 	if (*p != '\0') return false;
@@ -241,7 +241,7 @@ bool pgsql_variable_validate_maintenance_work_mem_v2(const char* value, const pa
 	const char* input = value;
 
 	/* Trim leading whitespace */
-	while (isspace((unsigned char)*input)) input++;
+	while (myisspace((unsigned char)*input)) input++;
 
 	/* Parse numeric part */
 	uint64_t number;
@@ -256,7 +256,7 @@ bool pgsql_variable_validate_maintenance_work_mem_v2(const char* value, const pa
 	//num_len = endptr - input;
 
 	// Skip whitespace after number
-	while (isspace((unsigned char)*endptr)) endptr++;
+	while (myisspace((unsigned char)*endptr)) endptr++;
 
 	/* Parse unit part */
 	const char* unit_ptr = endptr;
@@ -332,7 +332,7 @@ bool pgsql_variable_validate_maintenance_work_mem_v3(const char* value, const pa
 	(void)session;
 
 	// Trim leading whitespace
-	while (isspace((unsigned char)*value)) value++;
+	while (myisspace((unsigned char)*value)) value++;
 
 	char* endptr;
 	const char* num_start = value;
@@ -471,7 +471,7 @@ bool pgsql_variable_validate_search_path(const char* value, const params_t* para
 
 	while (*token && result) {
 		/* skip leading whitespace */
-		while (*token && isspace((unsigned char)*token)) token++;
+		while (*token && myisspace((unsigned char)*token)) token++;
 		if (*token == '\0') break;
 
 		const char* part_start = token;
@@ -508,7 +508,7 @@ bool pgsql_variable_validate_search_path(const char* value, const params_t* para
 			}
 		} else {
 			// unquoted identifier or $user
-			while (*token && *token != ',' && !isspace(*token)) token++;
+			while (*token && *token != ',' && !myisspace(*token)) token++;
 			part_len = (size_t)(token - part_start);
 			if (part_len == 0 || part_len > 63) {
 				result = false;
@@ -543,7 +543,7 @@ bool pgsql_variable_validate_search_path(const char* value, const params_t* para
 		normalized[norm_pos] = '\0';
 
 		// skip whitespace after part
-		while (*token && isspace(*token)) token++;
+		while (*token && myisspace(*token)) token++;
 
 		// expect comma or end
 		if (*token == ',') {

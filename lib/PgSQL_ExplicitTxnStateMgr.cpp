@@ -353,7 +353,7 @@ TxnCmd PgSQL_TxnCmdParser::parse(std::string_view input, bool in_transaction_mod
             quote_char = c;
             start = i;
         }
-        else if (isspace(c) || c == ';' || at_end) {
+        else if (myisspace(c) || c == ';' || at_end) {
             if (start < i) tokens.emplace_back(input.substr(start, i - start));
             start = i + 1;
         }

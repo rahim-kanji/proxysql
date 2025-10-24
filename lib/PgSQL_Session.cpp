@@ -2651,6 +2651,7 @@ int PgSQL_Session::handler() {
 #endif // ENABLE_TIMER
 	int handler_ret = 0;
 	bool wrong_pass = false;
+	bool is_in_pending_state = false;
 	if (to_process == 0) return 0; // this should be redundant if the called does the same check
 	proxy_debug(PROXY_DEBUG_NET, 1, "Thread=%p, Session=%p -- Processing session %p\n", this->thread, this, this);
 	//unsigned int j;
@@ -3158,6 +3159,9 @@ handler_again:
 					reset_extended_query_frame();
 					// status remains unchanged
 				}
+
+				if (rc == 1)
+					is_in_pending_state = true;
 			}
 			goto __exit_DSS__STATE_NOT_INITIALIZED;
 		}
@@ -3217,7 +3221,8 @@ __exit_DSS__STATE_NOT_INITIALIZED:
 		}
 	}
 
-	writeout();
+	if (is_in_pending_state == false)
+		writeout();
 
 	if (wrong_pass == true) {
 		client_myds->array2buffer_full();
@@ -6527,7 +6532,7 @@ std::vector<std::string> PgSQL_DateStyle_Util::split_datestyle(std::string_view 
 			int* lastNonSpace = (currentToken == 1) ? &lastNonSpace1 : &lastNonSpace2;
 
 			// Cache is-space check.
-			bool is_space = std::isspace(static_cast<unsigned char>(c));
+			bool is_space = myisspace(static_cast<unsigned char>(c));
 			// Skip leading whitespace for a new token.
 			if (currentStr->empty() && is_space) {
 				continue;

@@ -940,69 +940,74 @@ int PgSQL_Data_Stream::array2buffer() {
 	int ret = 0;
 	unsigned int idx = 0;
 	bool cont = true;
-	if (sess) {
-		if (sess->mirror == true) { // if this is a mirror session, just empty it
-			idx = PSarrayOUT->len;
-			goto __exit_array2buffer;
-		}
+
+	// Skip mirror sessions
+	if (sess && sess->mirror) {
+		idx = PSarrayOUT->len;
+		goto __exit_array2buffer;
 	}
-	while (cont) {
-		//VALGRIND_DISABLE_ERROR_REPORTING;
-		if (queue_available(queueOUT) == 0) {
-			goto __exit_array2buffer;
-		}
-		if (queueOUT.partial == 0) { // read a new packet
-			if (PSarrayOUT->len - idx) {
-				proxy_debug(PROXY_DEBUG_PKT_ARRAY, 5, "Session=%p . DataStream: %p -- Removing a packet from array\n", sess, this);
-				if (queueOUT.pkt.ptr) {
-					//l_free(queueOUT.pkt.size,queueOUT.pkt.ptr);
-					add_to_data_packet_history_without_alloc(data_packets_history_OUT, queueOUT.pkt.ptr, queueOUT.pkt.size);
-					queueOUT.pkt.ptr = NULL;
-				}
-				
-				memcpy(&queueOUT.pkt, PSarrayOUT->index(idx), sizeof(PtrSize_t));
-				idx++;
 
-				if (DSS == STATE_CLIENT_AUTH_OK) {
-					DSS = STATE_SLEEP;
+	while (cont && queue_available(queueOUT) > 0) {
+		// Load a new packet if needed
+		if (queueOUT.partial == 0 && (PSarrayOUT->len - idx) > 0) {
+			PtrSize_t* pkt_ptr = PSarrayOUT->index(idx);
 
-					//explicitly disable compression
-					//myconn->options.compression_min_length = 0;
-					myconn->set_status(false, STATUS_PGSQL_CONNECTION_COMPRESSION);
-				}
-				
+			proxy_debug(PROXY_DEBUG_PKT_ARRAY, 5,
+				"Session=%p . DataStream: %p -- Removing a packet from array\n",
+				sess, this);
+
+			memcpy(&queueOUT.pkt, pkt_ptr, sizeof(PtrSize_t));
+			idx++;
+
+			if (DSS == STATE_CLIENT_AUTH_OK) {
+				DSS = STATE_SLEEP;
+				myconn->set_status(false, STATUS_PGSQL_CONNECTION_COMPRESSION);
+			}
 #ifdef DEBUG
-				{ __dump_pkt(__func__, (unsigned char*)queueOUT.pkt.ptr, queueOUT.pkt.size); }
+			{ __dump_pkt(__func__, (unsigned char*)queueOUT.pkt.ptr, queueOUT.pkt.size); }
 #endif
-			}
-			else {
-				cont = false;
-				continue;
-			}
 		}
-		int b = (queue_available(queueOUT) > (queueOUT.pkt.size - queueOUT.partial) ? (queueOUT.pkt.size - queueOUT.partial) : queue_available(queueOUT));
-		//VALGRIND_DISABLE_ERROR_REPORTING;
-		memcpy(queue_w_ptr(queueOUT), (unsigned char*)queueOUT.pkt.ptr + queueOUT.partial, b);
-		//VALGRIND_ENABLE_ERROR_REPORTING;
-		queue_w(queueOUT, b);
-		proxy_debug(PROXY_DEBUG_PKT_ARRAY, 5, "Session=%p . DataStream: %p -- Copied %d bytes into send buffer\n", sess, this, b);
-		queueOUT.partial += b;
-		ret = b;
+		else if (queueOUT.partial == 0) {
+			// No more packets to process
+			cont = false;
+			break;
+		}
+
+		// Copy remaining bytes of the current packet to queueOUT
+		int to_copy = std::min(queue_available(queueOUT), queueOUT.pkt.size - queueOUT.partial);
+		memcpy(queue_w_ptr(queueOUT), (unsigned char*)queueOUT.pkt.ptr + queueOUT.partial, to_copy);
+		queue_w(queueOUT, to_copy);
+		queueOUT.partial += to_copy;
+		ret = to_copy;
+
+		proxy_debug(PROXY_DEBUG_PKT_ARRAY, 5,
+			"Session=%p . DataStream: %p -- Copied %d bytes into send buffer\n",
+			sess, this, to_copy);
+
+		// If packet fully copied, update history and state
 		if (queueOUT.partial == queueOUT.pkt.size) {
 			if (queueOUT.pkt.ptr) {
-				//l_free(queueOUT.pkt.size,queueOUT.pkt.ptr);
-				add_to_data_packet_history_without_alloc(data_packets_history_OUT, queueOUT.pkt.ptr, queueOUT.pkt.size);
+				add_to_data_packet_history_without_alloc(
+					data_packets_history_OUT,
+					queueOUT.pkt.ptr,
+					queueOUT.pkt.size
+				);
 				queueOUT.pkt.ptr = NULL;
 			}
-			proxy_debug(PROXY_DEBUG_PKT_ARRAY, 5, "Session=%p . DataStream: %p -- Packet completely written into send buffer\n", sess, this);
 			queueOUT.partial = 0;
 			pkts_sent += 1;
+
+			proxy_debug(PROXY_DEBUG_PKT_ARRAY, 5,
+				"Session=%p . DataStream: %p -- Packet completely written into send buffer\n",
+				sess, this);
 		}
 	}
+
 __exit_array2buffer:
 	if (idx) {
 		PSarrayOUT->remove_index_range(0, idx);
 	}
+
 	return ret;
 }
 
