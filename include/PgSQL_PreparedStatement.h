@@ -35,7 +35,7 @@ private:
 class PgSQL_STMTs_local_v14 {
 public:
 	// this map associate client_stmt_id to global_stmt_id : this is used only for client connections
-	std::map<std::string, uint64_t> stmt_name_to_global_ids;
+	std::map<uint32_t, uint64_t> stmt_name_to_global_ids;
 	// this multimap associate global_stmt_id to client_stmt_id : this is used only for client connections
 	std::multimap<uint64_t, std::string> global_id_to_stmt_names;
 
@@ -61,7 +61,7 @@ public:
 
 	void backend_insert(uint64_t global_stmt_id, uint32_t backend_stmt_id);
 	void client_insert(PgSQL_STMT_Global_info* stmt_info, const std::string& client_stmt_name, bool ref_client_inc,
-		std::map<std::string, uint64_t>::iterator itr);
+		std::map<uint32_t, uint64_t>::iterator itr);
 	uint32_t generate_new_backend_stmt_id();
 	uint64_t find_global_id_from_stmt_name(const std::string& client_stmt_name);
 	uint32_t find_backend_stmt_id_from_global_id(uint64_t global_id);

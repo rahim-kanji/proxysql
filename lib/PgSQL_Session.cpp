@@ -5680,8 +5680,8 @@ int PgSQL_Session::handle_post_sync_parse_message(PgSQL_Parse_Message* parse_msg
 	// if the same statement name is used, we drop it
 	PgSQL_STMTs_local_v14* local_stmts = client_myds->myconn->local_stmts;
 	std::string stmt_name(extended_query_info.stmt_client_name);
-
-	auto it = local_stmts->stmt_name_to_global_ids.find(stmt_name);
+	uint32_t hash32 = SpookyHash::Hash32(stmt_name.data(), stmt_name.size(), 0);
+	auto it = local_stmts->stmt_name_to_global_ids.find(hash32);
 
 	if (it != local_stmts->stmt_name_to_global_ids.end()) {
 
@@ -6429,8 +6429,8 @@ bool PgSQL_Session::handler___rc0_PROCESSING_STMT_PREPARE(enum session_status& s
 	// is, when 'PROCESSING_STMT_PREPARE' is reached directly without transitioning from a previous status
 	// like 'PROCESSING_STMT_EXECUTE'.
 	assert(extended_query_info.stmt_client_name);
-
-	client_myds->myconn->local_stmts->client_insert(stmt_info, extended_query_info.stmt_client_name, false, client_myds->myconn->local_stmts->stmt_name_to_global_ids.find(extended_query_info.stmt_client_name));
+	uint32_t hash = SpookyHash::Hash32(extended_query_info.stmt_client_name, strlen(extended_query_info.stmt_client_name), 0);
+	client_myds->myconn->local_stmts->client_insert(stmt_info, extended_query_info.stmt_client_name, false, client_myds->myconn->local_stmts->stmt_name_to_global_ids.find(hash));
 
 	return false;
 }

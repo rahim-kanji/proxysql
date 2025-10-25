@@ -1313,7 +1313,7 @@ char* PgSQL_Threads_Handler::get_variable_string(char* name) {
 int PgSQL_Threads_Handler::get_variable_int(const char* name) {
 	// convert name to string, and lowercase
 	std::string nameS = string(name);
-	std::transform(nameS.begin(), nameS.end(), nameS.begin(), [](unsigned char c) { return std::tolower(c); });
+	std::transform(nameS.begin(), nameS.end(), nameS.begin(), [](unsigned char c) { return ::tolower(c); });
 	{
 		// integer variable
 		std::unordered_map<std::string, std::tuple<int*, int, int, bool>>::const_iterator it = VariablesPointers_int.find(nameS);
@@ -1349,7 +1349,7 @@ char* PgSQL_Threads_Handler::get_variable(char* name) {	// this is the public fu
 
 	// convert name to string, and lowercase
 	std::string nameS = string(name);
-	std::transform(nameS.begin(), nameS.end(), nameS.begin(), [](unsigned char c) { return std::tolower(c); });
+	std::transform(nameS.begin(), nameS.end(), nameS.begin(), [](unsigned char c) { return ::tolower(c); });
 
 	{
 		// integer variable
@@ -1526,7 +1526,7 @@ bool PgSQL_Threads_Handler::set_variable(char* name, const char* value) {	// thi
 
 	// convert name to string, and lowercase
 	std::string nameS = string(name);
-	std::transform(nameS.begin(), nameS.end(), nameS.begin(), [](unsigned char c) { return std::tolower(c); });
+	std::transform(nameS.begin(), nameS.end(), nameS.begin(), [](unsigned char c) { return ::tolower(c); });
 	{
 		// integer variable ?
 		std::unordered_map<std::string, std::tuple<int*, int, int, bool>>::const_iterator it = VariablesPointers_int.find(nameS);

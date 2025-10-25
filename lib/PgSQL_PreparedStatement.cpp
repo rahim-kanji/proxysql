@@ -119,7 +119,7 @@ void PgSQL_STMTs_local_v14::backend_insert(uint64_t global_stmt_id, uint32_t bac
 	backend_stmt_to_global_ids.insert(std::make_pair(backend_stmt_id,global_stmt_id));
 }
 
-void PgSQL_STMTs_local_v14::client_insert(PgSQL_STMT_Global_info* stmt_info, const std::string& client_stmt_name, bool ref_client_inc, std::map<std::string, uint64_t>::iterator it) {
+void PgSQL_STMTs_local_v14::client_insert(PgSQL_STMT_Global_info* stmt_info, const std::string& client_stmt_name, bool ref_client_inc, std::map<uint32_t, uint64_t>::iterator it) {
 
 	uint64_t global_stmt_id = stmt_info->statement_id;
 
@@ -165,7 +165,8 @@ void PgSQL_STMTs_local_v14::client_insert(PgSQL_STMT_Global_info* stmt_info, con
 	}
 
 	// New statement name — just insert
-	stmt_name_to_global_ids.emplace(client_stmt_name, global_stmt_id);
+	uint32_t hash = SpookyHash::Hash32(client_stmt_name.data(), client_stmt_name.size(), 0);
+	stmt_name_to_global_ids.emplace(hash, global_stmt_id);
 	global_id_to_stmt_names.emplace(global_stmt_id, client_stmt_name);
 
 	if (ref_client_inc == false)
@@ -421,7 +422,8 @@ uint32_t PgSQL_STMTs_local_v14::generate_new_backend_stmt_id() {
 
 uint64_t PgSQL_STMTs_local_v14::find_global_id_from_stmt_name(const std::string& client_stmt_name) {
 	uint64_t ret=0;
-	if (auto s = stmt_name_to_global_ids.find(client_stmt_name); s != stmt_name_to_global_ids.end()) {
+	uint32_t hash = SpookyHash::Hash32(client_stmt_name.data(), client_stmt_name.size(), 0);
+	if (auto s = stmt_name_to_global_ids.find(hash); s != stmt_name_to_global_ids.end()) {
 		ret = s->second;
 	}
 	return ret;
@@ -435,7 +437,8 @@ uint32_t PgSQL_STMTs_local_v14::find_backend_stmt_id_from_global_id(uint64_t glo
 }
 
 bool PgSQL_STMTs_local_v14::client_close(const std::string& stmt_name) {
-	if (auto s = stmt_name_to_global_ids.find(stmt_name); s != stmt_name_to_global_ids.end()) {  // found
+	uint32_t hash = SpookyHash::Hash32(stmt_name.data(), stmt_name.size(), 0);
+	if (auto s = stmt_name_to_global_ids.find(hash); s != stmt_name_to_global_ids.end()) {  // found
 		uint64_t global_stmt_id = s->second;
 		stmt_name_to_global_ids.erase(s);
 		GloPgStmt->ref_count_client(global_stmt_id, -1);

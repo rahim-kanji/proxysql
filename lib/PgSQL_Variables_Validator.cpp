@@ -200,7 +200,7 @@ bool pgsql_variable_validate_maintenance_work_mem(const char* value, const param
 
 	// Parse unit
 	if (*p != '\0') {
-		char tmp_unit = tolower(*p);
+		char tmp_unit = ::tolower(*p);
 		switch (tmp_unit) {
 		case 'k': 
 		case 'm': 
@@ -210,7 +210,7 @@ bool pgsql_variable_validate_maintenance_work_mem(const char* value, const param
 				unit = toupper(*p++);
 			has_unit = true;
 			// Check optional 'b'/'B'
-			if (tolower(*p) == 'b') p++;
+			if (::tolower(*p) == 'b') p++;
 			break;
 		default:
 			return false;
@@ -273,7 +273,7 @@ bool pgsql_variable_validate_maintenance_work_mem_v2(const char* value, const pa
 		/* Convert unit to lowercase for validation */
 		char u[3] = { 0 };
 		for (int i = 0; i < 2 && unit_ptr[i]; i++)
-			u[i] = tolower((unsigned char)unit_ptr[i]);
+			u[i] = ::tolower((unsigned char)unit_ptr[i]);
 
 		/* Validate unit and set multiplier */
 		if (unit_len == 1 && u[0] == 'b') {
@@ -371,7 +371,7 @@ bool pgsql_variable_validate_maintenance_work_mem_v3(const char* value, const pa
 		// Convert unit to lowercase for validation
 		char u[3] = { 0 };
 		for (int i = 0; i < 2 && unit_ptr[i]; i++)
-			u[i] = tolower((unsigned char)unit_ptr[i]);
+			u[i] = ::tolower((unsigned char)unit_ptr[i]);
 
 		// Validate units and set multipliers
 		if (unit_len == 1 && u[0] == 'b') {
