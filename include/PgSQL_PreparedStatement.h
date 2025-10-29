@@ -9,21 +9,21 @@
 // it include all metadata associated with it
 class PgSQL_STMT_Global_info {
 public:
-	uint64_t digest;
-	PGSQL_QUERY_command PgQueryCmd;
+	char* query;
 	char* digest_text;
-	uint64_t hash;
-	char *username;
-	char *dbname;
-	char *query;
+	char* first_comment;
 	unsigned int query_length;
+	uint64_t statement_id;
 	std::atomic<uint32_t> ref_count_client;
 	std::atomic<uint32_t> ref_count_server;
-	uint64_t statement_id;
-	char* first_comment;
-	uint64_t total_mem_usage;
 	Parse_Param_Types parse_param_types;// array of parameter types, used for prepared statements
-
+	char* username;
+	char* dbname;
+	uint64_t digest;
+	uint64_t hash;
+	uint64_t total_mem_usage;
+	PGSQL_QUERY_command PgQueryCmd;
+	
 	PgSQL_STMT_Global_info(uint64_t id, char* u, char* d, char* q, unsigned int ql, char* fc, Parse_Param_Types&& ppt, uint64_t _h);
 	~PgSQL_STMT_Global_info();
 	void calculate_mem_usage();
@@ -63,7 +63,7 @@ public:
 	void client_insert(PgSQL_STMT_Global_info* stmt_info, const std::string& client_stmt_name, bool ref_client_inc,
 		std::map<uint32_t, uint64_t>::iterator itr);
 	uint32_t generate_new_backend_stmt_id();
-	uint64_t find_global_id_from_stmt_name(const std::string& client_stmt_name);
+	uint64_t find_global_id_from_stmt_name(std::string_view client_stmt_name);
 	uint32_t find_backend_stmt_id_from_global_id(uint64_t global_id);
 	bool client_close(const std::string& stmt_name);
 	void client_close_all();

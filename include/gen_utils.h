@@ -406,4 +406,21 @@ inline constexpr bool myisspace(unsigned char c) noexcept
 	return (c == ' ') | (static_cast<unsigned char>(c - '\t') < 5);
 }
 
+inline constexpr char* uint32_to_str(uint32_t value, char* out) {
+	char* p = out;
+	do {
+		*p++ = '0' + (value % 10);
+		value /= 10;
+	} while (value);
+	*p = '\0';
+	char* start = out;
+	char* end = p - 1;
+	while (start < end) {
+		char t = *start;
+		*start++ = *end;
+		*end-- = t;
+	}
+	return p; // end pointer (after '\0')
+}
+
 #endif /* __GEN_FUNCTIONS */

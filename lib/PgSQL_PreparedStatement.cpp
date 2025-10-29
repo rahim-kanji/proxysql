@@ -280,7 +280,8 @@ void PgSQL_STMT_Manager_v14::purge_stmts_if_needed(bool is_locked) noexcept {
 		}
 	}
 
-	unlock();
+	if (is_locked == false)
+		unlock();
 }
 
 void PgSQL_STMT_Manager_v14::ref_count_client(uint64_t _stmt_id, int _v, bool lock) noexcept {
@@ -420,7 +421,7 @@ uint32_t PgSQL_STMTs_local_v14::generate_new_backend_stmt_id() {
 	return local_max_stmt_id;
 }
 
-uint64_t PgSQL_STMTs_local_v14::find_global_id_from_stmt_name(const std::string& client_stmt_name) {
+uint64_t PgSQL_STMTs_local_v14::find_global_id_from_stmt_name(std::string_view client_stmt_name) {
 	uint64_t ret=0;
 	uint32_t hash = SpookyHash::Hash32(client_stmt_name.data(), client_stmt_name.size(), 0);
 	if (auto s = stmt_name_to_global_ids.find(hash); s != stmt_name_to_global_ids.end()) {
